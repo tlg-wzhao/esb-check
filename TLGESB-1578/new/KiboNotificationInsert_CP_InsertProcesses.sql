@@ -14,6 +14,7 @@ Version | Date        | Author    | Ref         | Description
 7       | 2023-08-22  | ElenaG    | TLGESB-1479 | added insert into IntBillShipStatusUpdNotificationProcess for LogisticStoreReturn
 8       | 2023-09-29  | AntonioC  | TLGESB-1558 | isPickup to be considered for ShipmentNotificationPartner flow
 9       | 2023-10-13  | ElenaG	  | TLGESB-1494 | [farfetchCode] -> [brand]
+10		| 2023-10-19  | WeijingZ  | TLGESB-1578 | added IN_STORE_PICKUP block
 */
 
 CREATE PROCEDURE [dbo].[KiboNotificationInsert_CP_InsertProcesses]
@@ -29,7 +30,8 @@ CREATE PROCEDURE [dbo].[KiboNotificationInsert_CP_InsertProcesses]
 	@externalOrderID VARCHAR(30),
 	@brandId INT,
 	@jsonResponse NVARCHAR(MAX) OUT,
-	@isPickup VARCHAR(30) --TLGESB-1558
+	@isPickup VARCHAR(30), --TLGESB-1558
+	@xpoOrderID VARCHAR(20) --TLGESB-1578
 ) 
 AS
 BEGIN
@@ -438,7 +440,7 @@ BEGIN
 		WHERE
 			IntBillShipStatusUpdNotification.IntBillShipStatusUpdNotificationId = @notificationId;
 
-	END;
+	END--;
 	---------------
 
 	--TLGESB-764
@@ -536,7 +538,7 @@ BEGIN
 	---------------
 
 	--TLGESB-1578
-	IF ((@stateToCode = '400' AND @isPickup = 'IN_STORE_PICKUP')) AND EXISTS (
+	IF ((@stateToCode = '400' AND @isPickup = 'IN_STORE_PICKUP') AND EXISTS (
 			SELECT
 				*
 			FROM
@@ -547,8 +549,8 @@ BEGIN
 		)
 	)
 	BEGIN
-		DECLARE @shipmentNotificationPartnerHeaderId UNIQUEIDENTIFIER = dbo.NEWID_ORD(NEWID());
-		DECLARE @kiboorderHeaderId UNIQUEIDENTIFIER =
+		DECLARE @shipmentNotificationPartnerHeaderIdPickup UNIQUEIDENTIFIER = dbo.NEWID_ORD(NEWID());
+		DECLARE @kiboorderHeaderIdPickup UNIQUEIDENTIFIER =
 			(
 				SELECT TOP 1 -- TLGESB-836 ignore duplicates from Kibo
 					kiboOrderHeaderId
@@ -576,7 +578,7 @@ BEGIN
 			[operator]
 		)
 		SELECT DISTINCT 
-			[shipmentNotificationPartnerHeaderId] = @shipmentNotificationPartnerHeaderId,
+			[shipmentNotificationPartnerHeaderId] = @shipmentNotificationPartnerHeaderIdPickup,
 			[orderNumber] = @externalOrderID,
 			[shipmentNumber] = @shipmentID,
 			[orderStatusDate] = @date,
@@ -589,7 +591,7 @@ BEGIN
 		FROM
 			KiboOrderHeader WITH (NOLOCK)
 		WHERE
-			kiboOrderHeaderId = @kiboorderHeaderId;
+			kiboOrderHeaderId = @kiboorderHeaderIdPickup;
 		
 		INSERT INTO ShipmentNotificationPartnerDetail 
 		(
@@ -600,18 +602,16 @@ BEGIN
 		)
 		SELECT
 			dbo.NEWID_ORD(NEWID()),
-			[shipmentNotificationPartnerHeaderId] = @shipmentNotificationPartnerHeaderId,
-			[quantity] = 1, --COUNT(*),
+			[shipmentNotificationPartnerHeaderId] = @shipmentNotificationPartnerHeaderIdPickup,
+			[quantity] = 1, --Every item in this flow is unitary
 			[barcode] = RIGHT(RTRIM(IntOrdShipStatusOrderDetail.productId), LEN(IntOrdShipStatusOrderDetail.productId)-2) 
 		FROM
-			KiboOrderShipmentItems WITH (NOLOCK)
-			INNER JOIN IntOrdShipStatusOrderHeader WITH (NOLOCK)
-			ON KiboOrderShipmentItems.xpoOrderID = IntOrdShipStatusOrderHeader.orderNo
+			IntOrdShipStatusOrderHeader WITH (NOLOCK)
             INNER JOIN IntOrdShipStatusOrderDetail WITH (NOLOCK)
             ON IntOrdShipStatusOrderHeader.intOrdShipStatusOrderHeaderId = IntOrdShipStatusOrderDetail.intOrdShipStatusOrderHeaderId 
 
 		WHERE
-			KiboOrderShipmentItems.shipmentID = @shipmentID
+			IntOrdShipStatusOrderHeader.orderNo = @xpoOrderID
 			AND IntOrdShipStatusOrderDetail.productStatus = 'ready-for-pickup';
 
 		INSERT INTO ShipmentNotificationPartnerProcess
@@ -625,7 +625,7 @@ BEGIN
 		VALUES
 		(
 			@notificationId,
-			@shipmentNotificationPartnerHeaderId,
+			@shipmentNotificationPartnerHeaderIdPickup,
 			@statusToProcess,
 			@date,
 			0
